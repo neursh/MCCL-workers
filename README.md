@@ -1,5 +1,5 @@
 <h1 align=center>
-    Minecraft Cloudflared
+    Minecraft Cloudflared Workers
 </h1>
 <h2 align=center>
     Workers implementation of the controller server for MCCL (WIP) ⚡
