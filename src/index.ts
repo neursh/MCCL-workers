@@ -4,23 +4,12 @@ interface JSONRequest {
 	name: string;
 	token: string;
 	trackId: string;
+	partsCount: number;
 }
 
 export interface Env {
-	// Example binding to KV. Learn more at https://developers.cloudflare.com/workers/runtime-apis/kv/
 	KV: KVNamespace;
-	//
-	// Example binding to Durable Object. Learn more at https://developers.cloudflare.com/workers/runtime-apis/durable-objects/
-	// MY_DURABLE_OBJECT: DurableObjectNamespace;
-	//
-	// Example binding to R2. Learn more at https://developers.cloudflare.com/workers/runtime-apis/r2/
 	BUCKET: R2Bucket;
-	//
-	// Example binding to a Service. Learn more at https://developers.cloudflare.com/workers/runtime-apis/service-bindings/
-	// MY_SERVICE: Fetcher;
-	//
-	// Example binding to a Queue. Learn more at https://developers.cloudflare.com/queues/javascript-apis/
-	// MY_QUEUE: Queue;
 }
 
 function checkAdmin(auth: any): boolean {
@@ -56,7 +45,7 @@ export default {
 				const resources: JSONRequest = await request.json();
 				await env.KV.put(resources.name, resources.token);
 
-				return new Response(null);
+				return new Response();
 			}
 			if (path === "hosting/unregister") {
 				if (!checkAdmin(auth)) {
@@ -66,34 +55,10 @@ export default {
 				const resources: JSONRequest = await request.json();
 				await env.KV.delete(resources.name);
 
-				return new Response(null);
+				return new Response();
 			}
 
-			if (path === "session/start") {
-				if (!checkAdmin(auth) && !await checkHosting(auth, env)) {
-					return new Response(null, { status: 401 });
-				}
-
-				const resources: JSONRequest = await request.json();
-
-				const sessionHostOwner = await env.KV.get("sessionHostOwner");
-				if (sessionHostOwner === null) {
-					await env.KV.put("sessionHostOwner", auth![0]);
-					await env.KV.put("sessionTrackId", resources.trackId);
-
-					return Response.json({
-						status: "started",
-						host: auth![0]
-					});
-				}
-
-				return Response.json({
-					status: "running",
-					host: sessionHostOwner,
-				}, { status: 403 });
-			}
-
-			if (path.startsWith("session/file/upload")) {
+			if (path.startsWith("session/upload")) {
 				if (!checkAdmin(auth) && !await checkHosting(auth, env)) {
 					return new Response(null, { status: 401 });
 				}
@@ -101,23 +66,9 @@ export default {
 				const user = auth![0];
 				const sessionHostOwner = await env.KV.get("sessionHostOwner");
 				if (sessionHostOwner === user) {
-					await env.BUCKET.put(`${path.slice(20)}`, request.body);
-					return new Response(null);
+					await env.BUCKET.put(`server.${path.split("/")[2]}.tar`, request.body);
+					return new Response();
 				}
-				return new Response(null, { status: 401 });
-			}
-			if (path.startsWith("session/file/delete")) {
-				if (!checkAdmin(auth) && !await checkHosting(auth, env)) {
-					return new Response(null, { status: 401 });
-				}
-
-				const user = auth![0];
-				const sessionHostOwner = await env.KV.get("sessionHostOwner");
-				if (sessionHostOwner === user) {
-					await env.BUCKET.delete(`${path.slice(20)}`);
-					return new Response(null);
-				}
-
 				return new Response(null, { status: 404 });
 			}
 
@@ -129,11 +80,19 @@ export default {
 				const user = auth![0];
 				const sessionHostOwner = await env.KV.get("sessionHostOwner");
 				if (sessionHostOwner === user) {
-					await env.BUCKET.put(`track.log`, request.body);
-					await env.KV.put("latestTrackId", (await env.KV.get("sessionTrackId"))!);
 					await env.KV.delete("sessionHostOwner");
+					
+					const resources: JSONRequest = await request.json();
 
-					return new Response(null);
+					if (resources.partsCount === undefined) {
+						return new Response();
+					}
+
+					const time = Math.floor(Date.now() / 1000).toString();
+					await env.KV.put("lastRun", time);
+					await env.KV.put("partsCount", (resources.partsCount + 1).toString());
+
+					return Response.json({ time: time });
 				}
 				return new Response(null, { status: 404 });
 			}
@@ -147,10 +106,12 @@ export default {
 
 				const sessionHostOwner = await env.KV.get("sessionHostOwner");
 				if (sessionHostOwner === null) {
-					const latestTrackId = await env.KV.get("latestTrackId");
+					const lastRun = await env.KV.get("lastRun") ?? "0";
+					const partsCount = await env.KV.get("partsCount") ?? "0";
 					return Response.json({
 						status: "idle",
-						latest: latestTrackId,
+						lastRun: parseInt(lastRun),
+						partsCount: parseInt(partsCount)
 					});
 				}
 
@@ -158,6 +119,41 @@ export default {
 					status: "running",
 					host: sessionHostOwner
 				});
+			}
+
+			if (path.startsWith("session/update")) {
+				if (!checkAdmin(auth) && !await checkHosting(auth, env)) {
+					return new Response(null, { status: 401 });
+				}
+
+				const user = auth![0];
+				const sessionHostOwner = await env.KV.get("sessionHostOwner");
+				if (sessionHostOwner === user) {
+					return new Response((await env.BUCKET.get(`server.${path.split("/")[2]}.tar`))?.body);
+				}
+				
+				return new Response(null, { status: 404 });
+			}
+
+			if (path === "session/start") {
+				if (!checkAdmin(auth) && !await checkHosting(auth, env)) {
+					return new Response(null, { status: 401 });
+				}
+
+				const sessionHostOwner = await env.KV.get("sessionHostOwner");
+				if (sessionHostOwner === null) {
+					await env.KV.put("sessionHostOwner", auth![0]);
+
+					return Response.json({
+						status: "started",
+						host: auth![0]
+					});
+				}
+
+				return Response.json({
+					status: "running",
+					host: sessionHostOwner,
+				}, { status: 403 });
 			}
 		}
 
