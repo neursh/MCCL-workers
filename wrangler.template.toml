@@ -1,0 +1,11 @@
+name = "" # todo
+main = "./src/index.ts"
+compatibility_date = "2022-10-10"
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "Your R2 bucket name"
+
+[[kv_namespaces]]
+binding = "KV"
+id = "Your KV ID"
