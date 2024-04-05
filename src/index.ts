@@ -20,6 +20,9 @@ function checkAdmin(auth: any): boolean {
 }
 
 async function checkHosting(auth: any, env: Env): Promise<boolean> {
+	if (auth[0] === "lastRun" || auth[0] === "partsCount" || auth[0] === "sessionHostOwner") {
+		return false;
+	}
 	if (auth[1] === await env.KV.get(auth[0])) {
 		return true;
 	}
