@@ -1,5 +1,3 @@
-import * as admin from "./admin.json";
-
 interface JSONRequest {
 	name: string;
 	token: string;
@@ -12,11 +10,58 @@ export interface Env {
 	BUCKET: R2Bucket;
 }
 
-function checkAdmin(auth: any): boolean {
-	if (auth[0] === admin["name"] && auth[1] === admin["token"]) {
-		return true;
+interface RouteOptions {
+	startswithCheck: boolean;
+}
+
+class RouteBuilder {
+	pathname: string;
+	private model: () => Promise<Response>;
+	options: RouteOptions;
+
+	constructor(pathname: string, model: () => Promise<Response>, options: RouteOptions) {
+		this.pathname = pathname;
+		this.model = model;
+		this.options = options;
 	}
-	return false;
+
+	async response(): Promise<Response> {
+		return this.model();
+	}
+}
+
+class WorkersApp {
+	private getRoutes: RouteBuilder[] = [];
+	private postRoutes: RouteBuilder[] = [];
+
+	get(pathname: string, model: () => Promise<Response>, options: RouteOptions = { startswithCheck: false }) {
+		this.getRoutes.push(new RouteBuilder(pathname, model, options));
+	}
+
+	post(pathname: string, model: () => Promise<Response>, options: RouteOptions = { startswithCheck: false }) {
+		this.postRoutes.push(new RouteBuilder(pathname, model, options));
+	}
+
+	async handle(pathname: string, method: string): Promise<Response> {
+		let targetRoutes: RouteBuilder[] | null = null;
+
+		if (method === "GET") {
+			targetRoutes = this.getRoutes;
+		} else if (method === "POST") {
+			targetRoutes = this.postRoutes;
+		}
+
+		if (targetRoutes !== null) {
+			for (let routeIter = 0; routeIter < targetRoutes.length; routeIter++) {
+				const route = targetRoutes[routeIter];
+				if (route.options.startswithCheck ? pathname.startsWith(route.pathname) : pathname === route.pathname) {
+					return route.response();
+				}
+			}
+		}
+
+		return new Response(null, { status: 501 });
+	}
 }
 
 async function checkHosting(auth: any, env: Env): Promise<boolean> {
@@ -31,135 +76,95 @@ async function checkHosting(auth: any, env: Env): Promise<boolean> {
 
 export default {
 	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-		const {
-			pathname
-		} = new URL(request.url);
-
-		const path = pathname.replace(/^\/|\/$/g, "");
-
+		const { pathname } = new URL(request.url);
 		const auth = request.headers.get("Authorization")?.split(" ");
 
-		if (request.method === "POST") {
-			if (path == "hosting/register") {
-				if (!checkAdmin(auth)) {
-					return new Response(null, { status: 401 });
-				}
+		if (!await checkHosting(auth, env)) {
+			return new Response(null, { status: 401 });
+		}
 
-				const resources: JSONRequest = await request.json();
-				await env.KV.put(resources.name, resources.token);
+		const app = new WorkersApp();
 
-				return new Response();
-			}
-			if (path === "hosting/unregister") {
-				if (!checkAdmin(auth)) {
-					return new Response(null, { status: 401 });
-				}
+		app.post("/session/upload", async () => {
+			const user = auth![0];
+			const sessionHostOwner = await env.KV.get("sessionHostOwner");
 
-				const resources: JSONRequest = await request.json();
-				await env.KV.delete(resources.name);
-
+			if (sessionHostOwner === user) {
+				await env.BUCKET.put(`server.${pathname.split("/")[3]}.tar`, request.body);
 				return new Response();
 			}
 
-			if (path.startsWith("session/upload")) {
-				if (!checkAdmin(auth) && !await checkHosting(auth, env)) {
-					return new Response(null, { status: 401 });
-				}
+			return new Response(null, { status: 404 });
+		}, { startswithCheck: true });
 
-				const user = auth![0];
-				const sessionHostOwner = await env.KV.get("sessionHostOwner");
-				if (sessionHostOwner === user) {
-					await env.BUCKET.put(`server.${path.split("/")[2]}.tar`, request.body);
+		app.post("/session/stop", async () => {
+			const user = auth![0];
+			const sessionHostOwner = await env.KV.get("sessionHostOwner");
+
+			if (sessionHostOwner === user) {
+				await env.KV.delete("sessionHostOwner");
+					
+				const resources: JSONRequest = await request.json();
+	
+				if (resources.partsCount === undefined) {
 					return new Response();
 				}
-				return new Response(null, { status: 404 });
+	
+				const time = Math.floor(Date.now() / 1000).toString();
+				await env.KV.put("lastRun", time);
+				await env.KV.put("partsCount", (resources.partsCount + 1).toString());
+	
+				return Response.json({ time: time });
 			}
 
-			if (path === "session/stop") {
-				if (!checkAdmin(auth) && !await checkHosting(auth, env)) {
-					return new Response(null, { status: 401 });
-				}
+			return new Response(null, { status: 404 });
+		});
 
-				const user = auth![0];
-				const sessionHostOwner = await env.KV.get("sessionHostOwner");
-				if (sessionHostOwner === user) {
-					await env.KV.delete("sessionHostOwner");
-					
-					const resources: JSONRequest = await request.json();
-
-					if (resources.partsCount === undefined) {
-						return new Response();
-					}
-
-					const time = Math.floor(Date.now() / 1000).toString();
-					await env.KV.put("lastRun", time);
-					await env.KV.put("partsCount", (resources.partsCount + 1).toString());
-
-					return Response.json({ time: time });
-				}
-				return new Response(null, { status: 404 });
-			}
-		}
-
-		if (request.method === "GET") {
-			if (path === "session/check") {
-				if (!checkAdmin(auth) && !await checkHosting(auth, env)) {
-					return new Response(null, { status: 401 });
-				}
-
-				const sessionHostOwner = await env.KV.get("sessionHostOwner");
-				if (sessionHostOwner === null) {
-					const lastRun = await env.KV.get("lastRun") ?? "0";
-					const partsCount = await env.KV.get("partsCount") ?? "0";
-					return Response.json({
-						status: "idle",
-						lastRun: parseInt(lastRun),
-						partsCount: parseInt(partsCount)
-					});
-				}
-
+		app.get("/session/check", async () => {
+			const sessionHostOwner = await env.KV.get("sessionHostOwner");
+			if (sessionHostOwner === null) {
+				const lastRun = await env.KV.get("lastRun") ?? "0";
+				const partsCount = await env.KV.get("partsCount") ?? "0";
 				return Response.json({
-					status: "running",
-					host: sessionHostOwner
+					status: "idle",
+					lastRun: parseInt(lastRun),
+					partsCount: parseInt(partsCount)
 				});
 			}
+	
+			return Response.json({
+				status: "running",
+				host: sessionHostOwner
+			});
+		});
 
-			if (path.startsWith("session/update")) {
-				if (!checkAdmin(auth) && !await checkHosting(auth, env)) {
-					return new Response(null, { status: 401 });
-				}
-
-				const user = auth![0];
-				const sessionHostOwner = await env.KV.get("sessionHostOwner");
-				if (sessionHostOwner === user) {
-					return new Response((await env.BUCKET.get(`server.${path.split("/")[2]}.tar`))?.body);
-				}
+		app.get("/session/update", async () => {
+			const user = auth![0];
+			const sessionHostOwner = await env.KV.get("sessionHostOwner");
+			if (sessionHostOwner === user) {
+				return new Response((await env.BUCKET.get(`server.${pathname.split("/")[3]}.tar`))?.body);
+			}
 				
-				return new Response(null, { status: 404 });
-			}
+			return new Response(null, { status: 404 });
+		});
 
-			if (path === "session/start") {
-				if (!checkAdmin(auth) && !await checkHosting(auth, env)) {
-					return new Response(null, { status: 401 });
-				}
-
-				const sessionHostOwner = await env.KV.get("sessionHostOwner");
-				if (sessionHostOwner === null) {
-					await env.KV.put("sessionHostOwner", auth![0]);
-
-					return Response.json({
-						status: "started",
-						host: auth![0]
-					});
-				}
-
+		app.get("/session/start", async () => {
+			const sessionHostOwner = await env.KV.get("sessionHostOwner");
+			if (sessionHostOwner === null) {
+				await env.KV.put("sessionHostOwner", auth![0]);
+	
 				return Response.json({
-					status: "running",
-					host: sessionHostOwner,
-				}, { status: 403 });
+					status: "started",
+					host: auth![0]
+				});
 			}
-		}
+	
+			return Response.json({
+				status: "running",
+				host: sessionHostOwner,
+			}, { status: 403 });
+		});
 
-		return new Response(null, { status: 501 });
+		return app.handle(pathname, request.method);
 	},
 };
