@@ -1,8 +1,12 @@
-interface JSONRequest {
+interface CompleteJsonRequest {
 	name: string;
 	token: string;
 	trackId: string;
 	partsCount: number;
+}
+
+interface MultipartJsonRequest {
+	key: string;
 }
 
 export interface Env {
@@ -65,7 +69,7 @@ class WorkersApp {
 }
 
 async function checkHosting(auth: any, env: Env): Promise<boolean> {
-	if (auth[0] === "lastRun" || auth[0] === "partsCount" || auth[0] === "sessionHostOwner") {
+	if (auth[0] === "lastRun" || auth[0] === "sessionHostOwner") {
 		return false;
 	}
 	if (auth[1] === await env.KV.get(auth[0])) {
@@ -76,8 +80,9 @@ async function checkHosting(auth: any, env: Env): Promise<boolean> {
 
 export default {
 	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-		const { pathname } = new URL(request.url);
+		const { pathname, searchParams } = new URL(request.url);
 		const auth = request.headers.get("Authorization")?.split(" ");
+		const multipartGlobalKey = "MCCLServer.tar";
 
 		if (!await checkHosting(auth, env)) {
 			return new Response(null, { status: 401 });
@@ -85,34 +90,78 @@ export default {
 
 		const app = new WorkersApp();
 
-		app.post("/session/upload", async () => {
+		app.get("/session/createMultipartUpload", async () => {
 			const user = auth![0];
 			const sessionHostOwner = await env.KV.get("sessionHostOwner");
 
 			if (sessionHostOwner === user) {
-				await env.BUCKET.put(`server.${pathname.split("/")[3]}.tar`, request.body);
+				const multipartUpload = await env.BUCKET.createMultipartUpload(multipartGlobalKey);
+				return Response.json({
+					key: multipartUpload.key,
+					uploadId: multipartUpload.uploadId,
+				});
+			}
+
+			return new Response(null, { status: 404 });
+		});
+
+		app.post("/session/uploadPart", async () => {
+			const user = auth![0];
+			const sessionHostOwner = await env.KV.get("sessionHostOwner");
+			const uploadId = searchParams.get("uploadId"),
+			part = parseInt(searchParams.get("part") ?? "");
+
+			if (sessionHostOwner === user && uploadId && !Number.isNaN(part) && request.body) {
+				const multipartUpload = env.BUCKET.resumeMultipartUpload(multipartGlobalKey, uploadId);
+				const uploadedPart: R2UploadedPart = await multipartUpload.uploadPart(part, request.body);
+
+				return Response.json(uploadedPart);
+			}
+
+			return new Response(null, { status: 404 });
+		}, { startswithCheck: true });
+
+		app.post("/session/uploadComplete", async () => {
+			const user = auth![0];
+			const sessionHostOwner = await env.KV.get("sessionHostOwner");
+			const uploadId = searchParams.get("uploadId");
+
+			if (sessionHostOwner === user && uploadId) {
+				const multipartUpload = env.BUCKET.resumeMultipartUpload(multipartGlobalKey, uploadId);
+
+				await multipartUpload.complete(await request.json());
+
 				return new Response();
 			}
 
 			return new Response(null, { status: 404 });
 		}, { startswithCheck: true });
 
-		app.post("/session/stop", async () => {
+		app.get("/session/uploadAbort", async () => {
+			const user = auth![0];
+			const sessionHostOwner = await env.KV.get("sessionHostOwner");
+			const uploadId = searchParams.get("uploadId");
+
+			if (sessionHostOwner === user && uploadId) {
+				const multipartUpload = env.BUCKET.resumeMultipartUpload(multipartGlobalKey, uploadId);
+
+				await multipartUpload.abort();
+
+				return new Response();
+			}
+
+			return new Response(null, { status: 404 });
+		}, { startswithCheck: true });
+
+		app.get("/session/stop", async () => {
 			const user = auth![0];
 			const sessionHostOwner = await env.KV.get("sessionHostOwner");
 
 			if (sessionHostOwner === user) {
 				await env.KV.delete("sessionHostOwner");
-					
-				const resources: JSONRequest = await request.json();
-	
-				if (resources.partsCount === undefined) {
-					return new Response();
-				}
 	
 				const time = Math.floor(Date.now() / 1000).toString();
 				await env.KV.put("lastRun", time);
-				await env.KV.put("partsCount", (resources.partsCount + 1).toString());
 	
 				return Response.json({ time: time });
 			}
@@ -124,11 +173,9 @@ export default {
 			const sessionHostOwner = await env.KV.get("sessionHostOwner");
 			if (sessionHostOwner === null) {
 				const lastRun = await env.KV.get("lastRun") ?? "0";
-				const partsCount = await env.KV.get("partsCount") ?? "0";
 				return Response.json({
 					status: "idle",
 					lastRun: parseInt(lastRun),
-					partsCount: parseInt(partsCount)
 				});
 			}
 	
@@ -138,11 +185,11 @@ export default {
 			});
 		});
 
-		app.get("/session/update", async () => {
+		app.get("/session/getServer", async () => {
 			const user = auth![0];
 			const sessionHostOwner = await env.KV.get("sessionHostOwner");
 			if (sessionHostOwner === user) {
-				return new Response((await env.BUCKET.get(`server.${pathname.split("/")[3]}.tar`))?.body);
+				return new Response((await env.BUCKET.get(multipartGlobalKey))?.body);
 			}
 				
 			return new Response(null, { status: 404 });
