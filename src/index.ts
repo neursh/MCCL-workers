@@ -226,6 +226,27 @@ app.get("/session/getServer", async (_, env, __, state) => {
 	return new Response(null, { status: 404 });
 });
 
+app.get("/session/getMapping", async (_, env, __, state) => {
+	const user = state.auth[0];
+	const sessionHostOwner = await env.KV.get("sessionHostOwner");
+	if (sessionHostOwner === user) {
+		return new Response((await env.BUCKET.get(state.serverMapping))?.body);
+	}
+		
+	return new Response(null, { status: 404 });
+});
+
+app.post("/session/uploadMapping", async (request, env, __, state) => {
+	const user = state.auth[0];
+	const sessionHostOwner = await env.KV.get("sessionHostOwner");
+	if (sessionHostOwner === user) {
+		env.BUCKET.put(state.serverMapping, request.body);
+		return new Response();
+	}
+		
+	return new Response(null, { status: 404 });
+});
+
 app.get("/session/start", async (_, env, __, state) => {
 	const sessionHostOwner = await env.KV.get("sessionHostOwner");
 
@@ -246,9 +267,8 @@ app.get("/session/start", async (_, env, __, state) => {
 
 export default {
 	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-		const { pathname, searchParams } = new URL(request.url);
+		const { searchParams } = new URL(request.url);
 		const auth: string[] | undefined = request.headers.get("Authorization")?.split(" ");
-		const multipartGlobalKey = "MCCLServer.tar";
 
 		if (!auth || !await checkAuth(auth, env)) {
 			return new Response(null, { status: 401 });
@@ -256,7 +276,8 @@ export default {
 
 		const state = {
 			auth: auth,
-			multipartGlobalKey: multipartGlobalKey,
+			multipartGlobalKey: "MCCLServer.tar",
+			serverMapping: "server.nlock.map",
 			searchParams: searchParams,
 		};
 
