@@ -5,4 +5,4 @@
     MCCL Workers implementation ⚡
 </h2>
 
-Refer to latest release to setup up.
+Refer to latest release to set things up.
