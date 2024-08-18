@@ -217,9 +217,13 @@ app.get("/session/check", async (_, env, __, ___) => {
 });
 
 app.get("/session/getServer", async (_, env, __, state) => {
+	const length = parseInt(state.searchParams.get("getTo"));
 	const user = state.auth[0];
 	const sessionHostOwner = await env.KV.get("sessionHostOwner");
 	if (sessionHostOwner === user) {
+		if (!Number.isNaN(length)) {
+			return new Response((await env.BUCKET.get(state.multipartGlobalKey, { range: { offset: 0, length: length } }))?.body);
+		}
 		return new Response((await env.BUCKET.get(state.multipartGlobalKey))?.body);
 	}
 		
@@ -240,7 +244,7 @@ app.post("/session/uploadMapping", async (request, env, __, state) => {
 	const user = state.auth[0];
 	const sessionHostOwner = await env.KV.get("sessionHostOwner");
 	if (sessionHostOwner === user) {
-		env.BUCKET.put(state.serverMapping, request.body);
+		await env.BUCKET.put(state.serverMapping, request.body);
 		return new Response();
 	}
 		
