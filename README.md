@@ -2,7 +2,7 @@
     Minecraft Cloudflared Workers
 </h1>
 <h2 align=center>
-    Workers implementation of the controller server for MCCL (WIP) ⚡
+    MCCL Workers implementation ⚡
 </h2>
 
-This implementation requires more testing.
+Refer to latest release to setup up.
