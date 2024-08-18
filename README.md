@@ -5,4 +5,4 @@
     MCCL Workers implementation ⚡
 </h2>
 
-Refer to latest release to set things up.
+Go to [latest release](https://github.com/neursh/MCCL-workers/releases/tag/v3.0) to set things up.
